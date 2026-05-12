@@ -19,6 +19,12 @@
 --
 -- Cells: `▀` (fg=top, bg=bot) when both halves carry info, `▄` (fg=bot) when
 -- only bottom, `▀` (fg=top) when only top, `█` for cursor alone, `·` empty.
+--
+-- Git deletes are an overlay: a column anchored to a deleted-line gap is
+-- drawn as `▁` (red) on empty cells, and as the cell's existing glyph with
+-- a red underline on cells that already carry a marker - so a delete next
+-- to a cursor or diagnostic doesn't hide it. Differs from the `▄` (red)
+-- used by error diagnostics.
 
 local M = {}
 
@@ -34,6 +40,7 @@ local config = {
     hint       = '#C792EA',
     git_add    = '#7FCC7F',
     git_change = '#7FAFFF',
+    git_delete = '#FC6161',
     base       = '#444444',
     file       = '#AAAAAA',
     dim        = '#444444',
@@ -74,29 +81,41 @@ local function bot_colors() return {
 
 local function setup_hl()
   local tc, bc = top_colors(), bot_colors()
+  -- `_D` variants overlay a red underline on the same glyph, used when a
+  -- delete coincides with another marker so the underlying glyph stays
+  -- visible. Empty cells use the dedicated `FbnDel` glyph (`▁`).
+  local function add_del(spec)
+    return vim.tbl_extend('force', spec,
+      { underline = true, sp = config.colors.git_delete })
+  end
+  local function reg(name, spec)
+    vim.api.nvim_set_hl(0, name, spec)
+    vim.api.nvim_set_hl(0, name .. '_D', add_del(spec))
+  end
+
   -- Top-only cells: `▀` fg=top_color
   for name, color in pairs(tc) do
-    vim.api.nvim_set_hl(0, 'FbnT_' .. name,
-      { fg = color, bold = (name == 'cursor') })
+    reg('FbnT_' .. name, { fg = color, bold = (name == 'cursor') })
   end
   -- Bottom-only cells: `▄` fg=bottom_color
   for name, color in pairs(bc) do
-    vim.api.nvim_set_hl(0, 'FbnB_' .. name, { fg = color })
+    reg('FbnB_' .. name, { fg = color })
   end
   -- Both halves: `▀` fg=top, bg=bottom
   for tname, tcol in pairs(tc) do
     for bname, bcol in pairs(bc) do
-      vim.api.nvim_set_hl(0, 'FbnT_' .. tname .. '_B_' .. bname,
+      reg('FbnT_' .. tname .. '_B_' .. bname,
         { fg = tcol, bg = bcol, bold = (tname == 'cursor') })
     end
   end
-  vim.api.nvim_set_hl(0, 'FbnBase',        { fg = config.colors.base })
-  vim.api.nvim_set_hl(0, 'FbnCursorBlock', { fg = config.colors.cursor, bold = true })
-  vim.api.nvim_set_hl(0, 'FbnFile',        { fg = config.colors.file })
-  vim.api.nvim_set_hl(0, 'FbnDim',         { fg = config.colors.dim })
-  vim.api.nvim_set_hl(0, 'FbnInfoTxt',     { fg = config.colors.info_txt })
-  vim.api.nvim_set_hl(0, 'FbnErrorTxt',    { fg = config.colors.error })
-  vim.api.nvim_set_hl(0, 'FbnWarnTxt',     { fg = config.colors.warn })
+  reg('FbnCursorBlock', { fg = config.colors.cursor, bold = true })
+  vim.api.nvim_set_hl(0, 'FbnBase',     { fg = config.colors.base })
+  vim.api.nvim_set_hl(0, 'FbnDel',      { fg = config.colors.git_delete })
+  vim.api.nvim_set_hl(0, 'FbnFile',     { fg = config.colors.file })
+  vim.api.nvim_set_hl(0, 'FbnDim',      { fg = config.colors.dim })
+  vim.api.nvim_set_hl(0, 'FbnInfoTxt',  { fg = config.colors.info_txt })
+  vim.api.nvim_set_hl(0, 'FbnErrorTxt', { fg = config.colors.error })
+  vim.api.nvim_set_hl(0, 'FbnWarnTxt',  { fg = config.colors.warn })
 end
 
 local function diag_counts(diags)
@@ -150,21 +169,31 @@ local function search_lines(bufnr)
   return hits
 end
 
--- lnum -> bottom-name for git-changed lines.
+-- Two maps for git status, both keyed by buffer line:
+--   marks   - lnum -> 'git_add' | 'git_change' (rendered as a bottom layer)
+--   deletes - lnum -> true                     (rendered as `▁` / underline)
+-- Pure delete hunks have added.count == 0; we anchor the marker on the
+-- nearest surviving line (the line just before the gap, or line 1 for a
+-- delete at the top of the file).
 local function git_marks(bufnr)
   local ok, gitsigns = pcall(require, 'gitsigns')
-  if not ok then return {} end
+  if not ok then return {}, {} end
   local hunks = gitsigns.get_hunks and gitsigns.get_hunks(bufnr) or {}
-  local marks = {}
+  local marks, deletes = {}, {}
   for _, h in ipairs(hunks) do
-    if h.added and h.added.count and h.added.count > 0 then
+    local added_n   = h.added and h.added.count or 0
+    local removed_n = h.removed and h.removed.count or 0
+    if added_n > 0 then
       local name = (h.type == 'change') and 'git_change' or 'git_add'
-      for lnum = h.added.start, h.added.start + h.added.count - 1 do
+      for lnum = h.added.start, h.added.start + added_n - 1 do
         marks[lnum] = name
       end
     end
+    if removed_n > 0 and added_n == 0 then
+      deletes[math.max(1, h.added and h.added.start or 1)] = true
+    end
   end
-  return marks
+  return marks, deletes
 end
 
 local function colored_count(n, sev_hl, width)
@@ -184,7 +213,7 @@ function M.render()
 
   local diags = vim.diagnostic.get(bufnr)
   local cnt = diag_counts(diags)
-  local git = git_marks(bufnr)
+  local git, git_del   = git_marks(bufnr)
   local marks_by_line  = mark_lines(bufnr)
   local search_by_line = search_lines(bufnr)
 
@@ -255,6 +284,8 @@ function M.render()
   for lnum in pairs(search_by_line) do search_col[lnum_to_col(lnum)] = true end
   local mark_col = {}
   for lnum in pairs(marks_by_line) do mark_col[lnum_to_col(lnum)] = true end
+  local del_col = {}
+  for lnum in pairs(git_del) do del_col[lnum_to_col(lnum)] = true end
 
   local parts = {}
   for col = 1, bar_width do
@@ -280,9 +311,16 @@ function M.render()
       hl, ch = 'FbnT_' .. top, '▀'
     elseif b then
       hl, ch = 'FbnB_' .. b, '▄'
+    elseif del_col[col] then
+      -- Empty cell on a deleted line: use the dedicated `▁` glyph so the
+      -- delete is unmistakable even without any other marker.
+      hl, ch = 'FbnDel', '▁'
     else
       hl, ch = 'FbnBase', '·'
     end
+    -- For non-empty cells coinciding with a delete, overlay a red underline
+    -- on top of the existing glyph so we don't lose the original marker.
+    if del_col[col] and ch ~= '▁' then hl = hl .. '_D' end
     parts[#parts+1] = '%#' .. hl .. '#' .. ch
   end
 

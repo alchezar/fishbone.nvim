@@ -15,26 +15,30 @@ Each cell composes a top half (overview) and a bottom half (signals):
 
 **Top half** (`▀`, highest wins):
 
-| Layer    | Color  | Source                              |
-|----------|--------|-------------------------------------|
-| cursor   | white  | current cursor line                 |
+| Layer    | Color  | Source                                |
+| -------- | ------ | ------------------------------------- |
+| cursor   | white  | current cursor line                   |
 | search   | pink   | lines matching the active `/` pattern |
-| mark     | yellow | vim a-z marks, marks.nvim bookmarks |
-| viewport | silver | lines currently visible on screen   |
+| mark     | yellow | vim a-z marks, marks.nvim bookmarks   |
+| viewport | silver | lines currently visible on screen     |
 
 **Bottom half** (`▄`, highest wins):
 
-| Layer       | Color  |
-|-------------|--------|
-| error       | red    |
-| warn        | orange |
-| git change  | blue   |
-| git add     | green  |
-| info        | cyan   |
-| hint        | purple |
+| Layer      | Color  |
+| ---------- | ------ |
+| error      | red    |
+| warn       | orange |
+| git change | blue   |
+| git add    | green  |
+| info       | cyan   |
+| hint       | purple |
 
 Cells with both halves use `▀` with fg=top, bg=bottom. Cursor with no
 bottom layer uses `█`. Empty cells use `·`.
+
+**Deletes** are an overlay. A line adjacent to a removed git hunk gets a
+red `▁` on empty cells, or a red underline added under the cell's existing
+glyph - so a delete next to a cursor or diagnostic doesn't hide it.
 
 ## Setup
 
@@ -51,6 +55,7 @@ require('fishbone').setup({
     hint       = '#C792EA',
     git_add    = '#7FCC7F',
     git_change = '#7FAFFF',
+    git_delete = '#FC6161',
     base       = '#444444',
   },
 })
