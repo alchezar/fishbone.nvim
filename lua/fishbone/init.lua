@@ -1,11 +1,22 @@
 -- Horizontal "fishbone" position bar. Layout:
---   <file path> [+]   <bar fills the rest of the row>
--- The bar maps every file line to a column. One cell per priority:
---   cursor   white   █
---   git_chg  blue    █
---   git_add  green   █
---   viewport silver  █
---   empty    dark    ·
+--   <file path> [+]   <bar fills the rest of the row>   <E> <W>  L:C  P%
+-- The bar maps every file line to a column on the bottom row. Each cell is
+-- a composition of a top half (overview) and a bottom half (signals):
+--
+-- Top-half (z-ordered, highest wins):
+--   cursor   white   ▀
+--   viewport silver  ▀
+--
+-- Bottom-half (z-ordered, highest wins):
+--   error    red     ▄
+--   warn     orange  ▄
+--   git chg  blue    ▄
+--   git add  green   ▄
+--   info     cyan    ▄
+--   hint     purple  ▄
+--
+-- Cells: `▀` (fg=top, bg=bot) when both halves carry info, `▄` (fg=bot) when
+-- only bottom, `▀` (fg=top) when only top, `█` for cursor alone, `·` empty.
 
 local M = {}
 
@@ -13,24 +24,71 @@ local config = {
   colors = {
     cursor     = '#FFFFFF',
     viewport   = '#888888',
+    error      = '#FC6161',
+    warn       = '#FFA348',
+    info       = '#67D4F0',
+    hint       = '#C792EA',
     git_add    = '#7FCC7F',
     git_change = '#7FAFFF',
     base       = '#444444',
     file       = '#AAAAAA',
+    dim        = '#444444',
+    info_txt   = '#BBBBBB',
   },
 }
 
+local TOP_PRIORITY = { 'cursor', 'viewport' }
+local BOT_NAMES    = { 'error', 'warn', 'git_change', 'git_add', 'info', 'hint' }
+-- Diagnostic severity (1..4) -> bottom-layer name
+local DIAG_BOT     = { 'error', 'warn', 'info', 'hint' }
+
+local function top_colors() return {
+  cursor   = config.colors.cursor,
+  viewport = config.colors.viewport,
+} end
+local function bot_colors() return {
+  error      = config.colors.error,
+  warn       = config.colors.warn,
+  git_change = config.colors.git_change,
+  git_add    = config.colors.git_add,
+  info       = config.colors.info,
+  hint       = config.colors.hint,
+} end
+
 local function setup_hl()
-  local c = config.colors
-  vim.api.nvim_set_hl(0, 'FbnCursor',    { fg = c.cursor, bold = true })
-  vim.api.nvim_set_hl(0, 'FbnViewport',  { fg = c.viewport })
-  vim.api.nvim_set_hl(0, 'FbnGitAdd',    { fg = c.git_add })
-  vim.api.nvim_set_hl(0, 'FbnGitChange', { fg = c.git_change })
-  vim.api.nvim_set_hl(0, 'FbnBase',      { fg = c.base })
-  vim.api.nvim_set_hl(0, 'FbnFile',      { fg = c.file })
+  local tc, bc = top_colors(), bot_colors()
+  -- Top-only cells: `▀` fg=top_color
+  for name, color in pairs(tc) do
+    vim.api.nvim_set_hl(0, 'FbnT_' .. name,
+      { fg = color, bold = (name == 'cursor') })
+  end
+  -- Bottom-only cells: `▄` fg=bottom_color
+  for name, color in pairs(bc) do
+    vim.api.nvim_set_hl(0, 'FbnB_' .. name, { fg = color })
+  end
+  -- Both halves: `▀` fg=top, bg=bottom
+  for tname, tcol in pairs(tc) do
+    for bname, bcol in pairs(bc) do
+      vim.api.nvim_set_hl(0, 'FbnT_' .. tname .. '_B_' .. bname,
+        { fg = tcol, bg = bcol, bold = (tname == 'cursor') })
+    end
+  end
+  vim.api.nvim_set_hl(0, 'FbnBase',        { fg = config.colors.base })
+  vim.api.nvim_set_hl(0, 'FbnCursorBlock', { fg = config.colors.cursor, bold = true })
+  vim.api.nvim_set_hl(0, 'FbnFile',        { fg = config.colors.file })
+  vim.api.nvim_set_hl(0, 'FbnDim',         { fg = config.colors.dim })
+  vim.api.nvim_set_hl(0, 'FbnInfoTxt',     { fg = config.colors.info_txt })
+  vim.api.nvim_set_hl(0, 'FbnErrorTxt',    { fg = config.colors.error })
+  vim.api.nvim_set_hl(0, 'FbnWarnTxt',     { fg = config.colors.warn })
 end
 
--- lnum -> 'git_add' | 'git_change' for git-changed lines.
+local function diag_counts(diags)
+  local c = { 0, 0, 0, 0 }
+  for _, d in ipairs(diags) do c[d.severity] = c[d.severity] + 1 end
+  return c
+end
+
+-- lnum -> bottom-name for git-changed lines.
 local function git_marks(bufnr)
   local ok, gitsigns = pcall(require, 'gitsigns')
   if not ok then return {} end
@@ -47,13 +105,23 @@ local function git_marks(bufnr)
   return marks
 end
 
+local function colored_count(n, sev_hl, width)
+  local hl = n > 0 and sev_hl or 'FbnDim'
+  return string.format('%%#%s#%' .. width .. 'd', hl, n)
+end
+
 function M.render()
   local bufnr = vim.api.nvim_win_get_buf(0)
   local total_lines = math.max(1, vim.api.nvim_buf_line_count(bufnr))
   local cursor_lnum = vim.fn.line('.')
+  local cursor_col  = vim.fn.col('.')
+  local pct = math.floor((cursor_lnum / total_lines) * 100 + 0.5)
+
   local view_top = vim.fn.line('w0')
   local view_bot = vim.fn.line('w$')
 
+  local diags = vim.diagnostic.get(bufnr)
+  local cnt = diag_counts(diags)
   local git = git_marks(bufnr)
 
   local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ':~:.')
@@ -62,8 +130,25 @@ function M.render()
   local left_plain = ' ' .. file .. modified .. '  '
   local left_segment = string.format('%%#FbnFile# %s%s  ', file, modified)
 
-  local bar_width = vim.o.columns - #left_plain
-  if bar_width < 6 then return left_segment end
+  local cnt_w  = 3
+  local line_w = math.max(3, #tostring(total_lines))
+  local col_w  = 3
+  local pct_w  = 3
+  local right_plain = string.format(
+    '  %' .. cnt_w .. 'd %' .. cnt_w .. 'd  %' .. line_w .. 'd:%' .. col_w
+    .. 'd  %' .. pct_w .. 'd%% ',
+    cnt[1], cnt[2], cursor_lnum, cursor_col, pct)
+  local right_segment = string.format(
+    '  %s %s  %%#FbnInfoTxt#%' .. line_w .. 'd:%-' .. col_w
+    .. 'd  %' .. pct_w .. 'd%%%% ',
+    colored_count(cnt[1], 'FbnErrorTxt', cnt_w),
+    colored_count(cnt[2], 'FbnWarnTxt',  cnt_w),
+    cursor_lnum, cursor_col, pct)
+
+  local bar_width = vim.o.columns - #left_plain - #right_plain
+  if bar_width < 6 then
+    return left_segment .. '%=' .. right_segment
+  end
 
   local function lnum_to_col(lnum)
     local col = math.floor(((lnum - 1) / math.max(1, total_lines - 1))
@@ -73,33 +158,58 @@ function M.render()
     return col
   end
 
-  local cursor_x   = lnum_to_col(cursor_lnum)
   local view_start = lnum_to_col(view_top)
   local view_end   = lnum_to_col(view_bot)
+  local cursor_x   = lnum_to_col(cursor_lnum)
 
-  local git_col = {}
+  -- Per-column resolved bottom layer (lower prio number wins).
+  local bot = {}
+  local function put_bot(col, name, prio)
+    local cur = bot[col]
+    if not cur or cur.prio > prio then
+      bot[col] = { name = name, prio = prio }
+    end
+  end
+  for _, d in ipairs(diags) do
+    local name = DIAG_BOT[d.severity]
+    if name then
+      -- error=1, warn=2, info=5, hint=6 (git change/add slip between)
+      local prio = ({ 1, 2, 5, 6 })[d.severity]
+      put_bot(lnum_to_col(d.lnum + 1), name, prio)
+    end
+  end
   for lnum, name in pairs(git) do
-    git_col[lnum_to_col(lnum)] = name
+    local prio = (name == 'git_change') and 3 or 4
+    put_bot(lnum_to_col(lnum), name, prio)
   end
 
   local parts = {}
   for col = 1, bar_width do
-    local hl, ch
+    local top
     if col == cursor_x then
-      hl, ch = 'FbnCursor', '█'
-    elseif git_col[col] == 'git_change' then
-      hl, ch = 'FbnGitChange', '█'
-    elseif git_col[col] == 'git_add' then
-      hl, ch = 'FbnGitAdd', '█'
+      top = 'cursor'
     elseif col >= view_start and col <= view_end then
-      hl, ch = 'FbnViewport', '█'
+      top = 'viewport'
+    end
+
+    local b = bot[col] and bot[col].name or nil
+
+    local hl, ch
+    if top == 'cursor' and not b then
+      hl, ch = 'FbnCursorBlock', '█'
+    elseif top and b then
+      hl, ch = 'FbnT_' .. top .. '_B_' .. b, '▀'
+    elseif top then
+      hl, ch = 'FbnT_' .. top, '▀'
+    elseif b then
+      hl, ch = 'FbnB_' .. b, '▄'
     else
       hl, ch = 'FbnBase', '·'
     end
     parts[#parts+1] = '%#' .. hl .. '#' .. ch
   end
 
-  return left_segment .. table.concat(parts)
+  return left_segment .. table.concat(parts) .. right_segment
 end
 
 function M.setup(opts)
@@ -115,7 +225,7 @@ function M.setup(opts)
   local group = vim.api.nvim_create_augroup('Fishbone', { clear = true })
   vim.api.nvim_create_autocmd(
     { 'CursorMoved', 'CursorMovedI', 'WinScrolled', 'BufEnter',
-      'VimResized', 'TextChanged', 'TextChangedI' },
+      'DiagnosticChanged', 'VimResized', 'TextChanged', 'TextChangedI' },
     { group = group, callback = function() vim.cmd('redrawstatus') end }
   )
   vim.api.nvim_create_autocmd('User', {
