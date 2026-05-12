@@ -15,10 +15,12 @@ Each cell composes a top half (overview) and a bottom half (signals):
 
 **Top half** (`▀`, highest wins):
 
-| Layer    | Color  |
-|----------|--------|
-| cursor   | white  |
-| viewport | silver |
+| Layer    | Color  | Source                              |
+|----------|--------|-------------------------------------|
+| cursor   | white  | current cursor line                 |
+| search   | pink   | lines matching the active `/` pattern |
+| mark     | yellow | vim a-z marks, marks.nvim bookmarks |
+| viewport | silver | lines currently visible on screen   |
 
 **Bottom half** (`▄`, highest wins):
 
@@ -40,6 +42,8 @@ bottom layer uses `█`. Empty cells use `·`.
 require('fishbone').setup({
   colors = {
     cursor     = '#FFFFFF',
+    search     = '#FF77AA',
+    mark       = '#FFD866',
     viewport   = '#888888',
     error      = '#FC6161',
     warn       = '#FFA348',
@@ -57,3 +61,4 @@ Sets `laststatus=3` and installs a `%!` statusline expression.
 ## Soft dependencies
 
 - [gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim) - git add/change markers.
+- [marks.nvim](https://github.com/chentoast/marks.nvim) - numbered bookmarks (vim a-z marks work without it).

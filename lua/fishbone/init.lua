@@ -5,6 +5,8 @@
 --
 -- Top-half (z-ordered, highest wins):
 --   cursor   white   ▀
+--   search   pink    ▀ - line currently matches the active /search pattern
+--   mark     yellow  ▀ - vim a-z mark or marks.nvim bookmark
 --   viewport silver  ▀
 --
 -- Bottom-half (z-ordered, highest wins):
@@ -23,6 +25,8 @@ local M = {}
 local config = {
   colors = {
     cursor     = '#FFFFFF',
+    search     = '#FF77AA',
+    mark       = '#FFD866',
     viewport   = '#888888',
     error      = '#FC6161',
     warn       = '#FFA348',
@@ -37,13 +41,15 @@ local config = {
   },
 }
 
-local TOP_PRIORITY = { 'cursor', 'viewport' }
+local TOP_PRIORITY = { 'cursor', 'search', 'mark', 'viewport' }
 local BOT_NAMES    = { 'error', 'warn', 'git_change', 'git_add', 'info', 'hint' }
 -- Diagnostic severity (1..4) -> bottom-layer name
 local DIAG_BOT     = { 'error', 'warn', 'info', 'hint' }
 
 local function top_colors() return {
   cursor   = config.colors.cursor,
+  search   = config.colors.search,
+  mark     = config.colors.mark,
   viewport = config.colors.viewport,
 } end
 local function bot_colors() return {
@@ -88,6 +94,51 @@ local function diag_counts(diags)
   return c
 end
 
+-- Set of buffer lines that hold a vim a-z mark or a marks.nvim bookmark.
+local function mark_lines(bufnr)
+  local out = {}
+  for _, m in ipairs(vim.fn.getmarklist(bufnr)) do
+    local name = m.mark or ''
+    -- m.mark is like "'a"; we only want letter marks, skip jump marks.
+    if name:match("^'[a-zA-Z]$") then
+      local lnum = m.pos and m.pos[2]
+      if lnum and lnum > 0 then out[lnum] = true end
+    end
+  end
+  local ok, marks_api = pcall(require, 'marks')
+  if ok and marks_api.bookmark_state and marks_api.bookmark_state.groups then
+    for _, group in pairs(marks_api.bookmark_state.groups) do
+      local buf_marks = group.marks and group.marks[bufnr] or nil
+      if buf_marks then
+        for lnum, _ in pairs(buf_marks) do out[lnum] = true end
+      end
+    end
+  end
+  return out
+end
+
+-- Search-match line set, cached on (bufnr, tick, pattern) so we don't rescan
+-- the buffer on every statusline redraw.
+local search_cache = { bufnr = -1, tick = -1, pat = '', lines = {} }
+local function search_lines(bufnr)
+  if vim.v.hlsearch == 0 then return {} end
+  local pat = vim.fn.getreg('/')
+  if pat == '' then return {} end
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  if search_cache.bufnr == bufnr
+     and search_cache.tick == tick
+     and search_cache.pat == pat then
+    return search_cache.lines
+  end
+  local hits = {}
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for i, line in ipairs(lines) do
+    if vim.fn.match(line, pat) >= 0 then hits[i] = true end
+  end
+  search_cache = { bufnr = bufnr, tick = tick, pat = pat, lines = hits }
+  return hits
+end
+
 -- lnum -> bottom-name for git-changed lines.
 local function git_marks(bufnr)
   local ok, gitsigns = pcall(require, 'gitsigns')
@@ -123,6 +174,8 @@ function M.render()
   local diags = vim.diagnostic.get(bufnr)
   local cnt = diag_counts(diags)
   local git = git_marks(bufnr)
+  local marks_by_line  = mark_lines(bufnr)
+  local search_by_line = search_lines(bufnr)
 
   local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ':~:.')
   if file == '' then file = '[No Name]' end
@@ -183,11 +236,20 @@ function M.render()
     put_bot(lnum_to_col(lnum), name, prio)
   end
 
+  local search_col = {}
+  for lnum in pairs(search_by_line) do search_col[lnum_to_col(lnum)] = true end
+  local mark_col = {}
+  for lnum in pairs(marks_by_line) do mark_col[lnum_to_col(lnum)] = true end
+
   local parts = {}
   for col = 1, bar_width do
     local top
     if col == cursor_x then
       top = 'cursor'
+    elseif search_col[col] then
+      top = 'search'
+    elseif mark_col[col] then
+      top = 'mark'
     elseif col >= view_start and col <= view_end then
       top = 'viewport'
     end
@@ -231,6 +293,10 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd('User', {
     group = group, pattern = 'GitSignsUpdate',
     callback = function() vim.cmd('redrawstatus') end,
+  })
+  -- Search pattern changes redraw via CmdlineLeave on /, ?, and :nohlsearch.
+  vim.api.nvim_create_autocmd('CmdlineLeave', {
+    group = group, callback = function() vim.cmd('redrawstatus') end,
   })
   vim.api.nvim_create_autocmd('ColorScheme',
     { group = group, callback = setup_hl })
