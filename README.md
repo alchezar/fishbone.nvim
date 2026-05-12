@@ -60,8 +60,11 @@ Sets `laststatus=3` and installs a `%!` statusline expression.
 
 ## Mouse
 
-Click anywhere on the bar to jump the cursor to that line. `<C-o>` returns
-to the previous position (a jumplist entry is added on click).
+- **Click** on the bar to jump the cursor to that line. `<C-o>` returns
+  to the previous position (a jumplist entry is added on click).
+- **Drag** to scrub the cursor smoothly along the file. Once a drag starts
+  on the bar, mouse Y can leave the statusline row - the cursor still
+  follows the X position; past the bar edges, X sticks at the extreme.
 
 Works in terminal Neovim and Neovide.
 

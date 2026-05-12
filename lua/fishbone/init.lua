@@ -51,6 +51,12 @@ local DIAG_BOT     = { 'error', 'warn', 'info', 'hint' }
 -- it always matches what the user actually sees.
 local last = { left_w = 0, bar_width = 0, total_lines = 1 }
 
+-- True between a press that landed on the bar and the matching release.
+-- While set, drag events steer the cursor regardless of mouse Y, and X is
+-- clamped to bar bounds - so the user can wander above or below the bar
+-- without losing the drag.
+local dragging = false
+
 local function top_colors() return {
   cursor   = config.colors.cursor,
   search   = config.colors.search,
@@ -284,19 +290,26 @@ function M.render()
   return left_segment .. bar_segment .. right_segment
 end
 
--- Map a mouse position to a buffer line and jump there if the click landed
--- inside the bar. Returns true on successful jump.
-local function jump_from_mouse(mp)
+-- Map a mouse position to a buffer line and jump there. `add_jump` controls
+-- whether to push a jumplist entry: true for an initial click (so <C-o>
+-- works), false for drag ticks (otherwise every drag tick spams the list).
+-- `clamp` clips the horizontal position to bar bounds; used during drag so
+-- mouse Y can roam freely and X past the edges sticks at the extreme.
+local function jump_from_mouse(mp, add_jump, clamp)
   if last.bar_width <= 0 then return false end
   local col_in_bar = mp.screencol - last.left_w
-  if col_in_bar < 1 or col_in_bar > last.bar_width then return false end
+  if clamp then
+    if col_in_bar < 1 then col_in_bar = 1 end
+    if col_in_bar > last.bar_width then col_in_bar = last.bar_width end
+  elseif col_in_bar < 1 or col_in_bar > last.bar_width then
+    return false
+  end
   local total = math.max(1, last.total_lines)
   local denom = math.max(1, last.bar_width - 1)
   local lnum = math.floor((col_in_bar - 1) / denom * (total - 1) + 0.5) + 1
   if lnum < 1 then lnum = 1 end
   if lnum > total then lnum = total end
-  -- Drop a jumplist entry so <C-o> returns to the pre-click position.
-  vim.cmd("normal! m'")
+  if add_jump then vim.cmd("normal! m'") end
   vim.api.nvim_win_set_cursor(0, { lnum, 0 })
   return true
 end
@@ -304,7 +317,9 @@ end
 -- Called via the `%@FishboneClick@` region in the rendered statusline.
 function M.on_click(_, _, button, _)
   if button ~= 'l' then return end
-  jump_from_mouse(vim.fn.getmousepos())
+  if jump_from_mouse(vim.fn.getmousepos(), true, false) then
+    dragging = true
+  end
 end
 
 -- The `%@FuncName@` format in 'statusline' expects a plain vimscript
@@ -338,13 +353,36 @@ function M.setup(opts)
          and last.bar_width > 0 then
         local col_in_bar = mp.screencol - last.left_w
         if col_in_bar >= 1 and col_in_bar <= last.bar_width then
-          vim.schedule(function() jump_from_mouse(mp) end)
+          dragging = true
+          vim.schedule(function() jump_from_mouse(mp, true, false) end)
           return ''
         end
       end
+      dragging = false
       return '<LeftMouse>'
     end, { expr = true })
   end
+
+  -- Drag and release: work in both terminal and Neovide. %@..@ regions
+  -- don't receive these events, so a keymap is the only path. Once a drag
+  -- starts on the bar, every drag tick repositions the cursor regardless
+  -- of mouse Y; X is clamped to bar bounds.
+  vim.keymap.set({ 'n', 'i', 'v' }, '<LeftDrag>', function()
+    if dragging then
+      local mp = vim.fn.getmousepos()
+      vim.schedule(function() jump_from_mouse(mp, false, true) end)
+      return ''
+    end
+    return '<LeftDrag>'
+  end, { expr = true })
+
+  vim.keymap.set({ 'n', 'i', 'v' }, '<LeftRelease>', function()
+    if dragging then
+      dragging = false
+      return ''
+    end
+    return '<LeftRelease>'
+  end, { expr = true })
 
   local group = vim.api.nvim_create_augroup('Fishbone', { clear = true })
   vim.api.nvim_create_autocmd(
