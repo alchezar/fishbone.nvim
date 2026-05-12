@@ -28,7 +28,12 @@
 
 local M = {}
 
-local config = {
+-- Color resolution order, per name:
+--   1. user override from `opts.colors.<name>`
+--   2. fg of a linked highlight group (theme-aware, see THEME_LINK)
+--   3. hardcoded fallback below
+-- Names with no entry in THEME_LINK skip step 2.
+local defaults = {
   colors = {
     cursor     = '#FFFFFF',
     search     = '#FF77AA',
@@ -48,6 +53,36 @@ local config = {
   },
 }
 
+local THEME_LINK = {
+  error      = 'DiagnosticError',
+  warn       = 'DiagnosticWarn',
+  info       = 'DiagnosticInfo',
+  hint       = 'DiagnosticHint',
+  git_add    = 'GitSignsAdd',
+  git_change = 'GitSignsChange',
+  git_delete = 'GitSignsDelete',
+}
+
+local user_colors = {}
+
+local function hl_fg(group)
+  local id = vim.fn.hlID(group)
+  if id == 0 then return nil end
+  local fg = vim.fn.synIDattr(vim.fn.synIDtrans(id), 'fg#')
+  if fg == nil or fg == '' then return nil end
+  return fg
+end
+
+local function color(name)
+  if user_colors[name] then return user_colors[name] end
+  local link = THEME_LINK[name]
+  if link then
+    local c = hl_fg(link)
+    if c then return c end
+  end
+  return defaults.colors[name]
+end
+
 local TOP_PRIORITY = { 'cursor', 'search', 'mark', 'viewport' }
 local BOT_NAMES    = { 'error', 'warn', 'git_change', 'git_add', 'info', 'hint' }
 -- Diagnostic severity (1..4) -> bottom-layer name
@@ -65,18 +100,18 @@ local last = { left_w = 0, bar_width = 0, total_lines = 1 }
 local dragging = false
 
 local function top_colors() return {
-  cursor   = config.colors.cursor,
-  search   = config.colors.search,
-  mark     = config.colors.mark,
-  viewport = config.colors.viewport,
+  cursor   = color('cursor'),
+  search   = color('search'),
+  mark     = color('mark'),
+  viewport = color('viewport'),
 } end
 local function bot_colors() return {
-  error      = config.colors.error,
-  warn       = config.colors.warn,
-  git_change = config.colors.git_change,
-  git_add    = config.colors.git_add,
-  info       = config.colors.info,
-  hint       = config.colors.hint,
+  error      = color('error'),
+  warn       = color('warn'),
+  git_change = color('git_change'),
+  git_add    = color('git_add'),
+  info       = color('info'),
+  hint       = color('hint'),
 } end
 
 local function setup_hl()
@@ -86,7 +121,7 @@ local function setup_hl()
   -- visible. Empty cells use the dedicated `FbnDel` glyph (`▁`).
   local function add_del(spec)
     return vim.tbl_extend('force', spec,
-      { underline = true, sp = config.colors.git_delete })
+      { underline = true, sp = color('git_delete') })
   end
   local function reg(name, spec)
     vim.api.nvim_set_hl(0, name, spec)
@@ -94,12 +129,12 @@ local function setup_hl()
   end
 
   -- Top-only cells: `▀` fg=top_color
-  for name, color in pairs(tc) do
-    reg('FbnT_' .. name, { fg = color, bold = (name == 'cursor') })
+  for name, c in pairs(tc) do
+    reg('FbnT_' .. name, { fg = c, bold = (name == 'cursor') })
   end
   -- Bottom-only cells: `▄` fg=bottom_color
-  for name, color in pairs(bc) do
-    reg('FbnB_' .. name, { fg = color })
+  for name, c in pairs(bc) do
+    reg('FbnB_' .. name, { fg = c })
   end
   -- Both halves: `▀` fg=top, bg=bottom
   for tname, tcol in pairs(tc) do
@@ -108,14 +143,14 @@ local function setup_hl()
         { fg = tcol, bg = bcol, bold = (tname == 'cursor') })
     end
   end
-  reg('FbnCursorBlock', { fg = config.colors.cursor, bold = true })
-  vim.api.nvim_set_hl(0, 'FbnBase',     { fg = config.colors.base })
-  vim.api.nvim_set_hl(0, 'FbnDel',      { fg = config.colors.git_delete })
-  vim.api.nvim_set_hl(0, 'FbnFile',     { fg = config.colors.file })
-  vim.api.nvim_set_hl(0, 'FbnDim',      { fg = config.colors.dim })
-  vim.api.nvim_set_hl(0, 'FbnInfoTxt',  { fg = config.colors.info_txt })
-  vim.api.nvim_set_hl(0, 'FbnErrorTxt', { fg = config.colors.error })
-  vim.api.nvim_set_hl(0, 'FbnWarnTxt',  { fg = config.colors.warn })
+  reg('FbnCursorBlock', { fg = color('cursor'), bold = true })
+  vim.api.nvim_set_hl(0, 'FbnBase',     { fg = color('base') })
+  vim.api.nvim_set_hl(0, 'FbnDel',      { fg = color('git_delete') })
+  vim.api.nvim_set_hl(0, 'FbnFile',     { fg = color('file') })
+  vim.api.nvim_set_hl(0, 'FbnDim',      { fg = color('dim') })
+  vim.api.nvim_set_hl(0, 'FbnInfoTxt',  { fg = color('info_txt') })
+  vim.api.nvim_set_hl(0, 'FbnErrorTxt', { fg = color('error') })
+  vim.api.nvim_set_hl(0, 'FbnWarnTxt',  { fg = color('warn') })
 end
 
 local function diag_counts(diags)
@@ -373,9 +408,7 @@ vim.cmd([[
 
 function M.setup(opts)
   opts = opts or {}
-  if opts.colors then
-    config.colors = vim.tbl_extend('force', config.colors, opts.colors)
-  end
+  user_colors = opts.colors or {}
   setup_hl()
 
   vim.opt.statusline = '%!v:lua.require("fishbone").render()'

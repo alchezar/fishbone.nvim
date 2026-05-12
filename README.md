@@ -65,26 +65,46 @@ glyph - so a delete next to a cursor or diagnostic doesn't hide it.
 
 ## Setup
 
+The minimum is just:
+
+```lua
+require('fishbone').setup()
+```
+
+Colors are resolved in this order, per layer:
+
+1. `opts.colors.<name>` you pass to `setup()`
+2. `fg` of a linked highlight group from your theme (see below)
+3. Built-in fallback
+
+Themed names (auto-pulled from highlight groups):
+
+| Name         | Source highlight    |
+| ------------ | ------------------- |
+| `error`      | `DiagnosticError`   |
+| `warn`       | `DiagnosticWarn`    |
+| `info`       | `DiagnosticInfo`    |
+| `hint`       | `DiagnosticHint`    |
+| `git_add`    | `GitSignsAdd`       |
+| `git_change` | `GitSignsChange`    |
+| `git_delete` | `GitSignsDelete`    |
+
+If your theme defines those groups, fishbone follows along on `ColorScheme`
+without any extra configuration. To override anything explicitly:
+
 ```lua
 require('fishbone').setup({
   colors = {
-    cursor     = '#FFFFFF',
-    search     = '#FF77AA',
-    mark       = '#FFD866',
-    viewport   = '#888888',
-    error      = '#FC6161',
-    warn       = '#FFA348',
-    info       = '#67D4F0',
-    hint       = '#C792EA',
-    git_add    = '#7FCC7F',
-    git_change = '#7FAFFF',
-    git_delete = '#FC6161',
-    base       = '#444444',
+    cursor   = '#FFFFFF',
+    search   = '#FF77AA',
+    mark     = '#FFD866',
+    viewport = '#888888',
+    git_add  = '#7FCC7F',  -- wins over GitSignsAdd
   },
 })
 ```
 
-Sets `laststatus=3` and installs a `%!` statusline expression.
+`setup()` also sets `laststatus=3` and installs a `%!` statusline expression.
 
 ## Mouse
 

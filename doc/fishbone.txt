@@ -44,23 +44,33 @@ require('fishbone').setup({opts})
 
 `opts.colors`                                       *fishbone-config-colors*
 
-  Hex strings, merged on top of the defaults:
+  Each color is resolved in this order:
+    1. Explicit value from `opts.colors.<name>`
+    2. `fg` of a linked highlight group (see table below)
+    3. Hardcoded fallback listed here
+
+  Hex strings, used only as fallbacks when both explicit overrides and
+  themed highlight groups are absent:
 
     cursor      '#FFFFFF'   current line marker
     search      '#FF77AA'   search-pattern hits
     mark        '#FFD866'   vim a-z marks / marks.nvim bookmarks
     viewport    '#888888'   lines visible on screen
-    error       '#FC6161'   error diagnostics
-    warn        '#FFA348'   warning diagnostics
-    info        '#67D4F0'   info diagnostics
-    hint        '#C792EA'   hint diagnostics
-    git_add     '#7FCC7F'   git added lines
-    git_change  '#7FAFFF'   git changed lines
-    git_delete  '#FC6161'   git deleted gap marker
+    error       '#FC6161'   error diagnostics    | DiagnosticError
+    warn        '#FFA348'   warning diagnostics  | DiagnosticWarn
+    info        '#67D4F0'   info diagnostics     | DiagnosticInfo
+    hint        '#C792EA'   hint diagnostics     | DiagnosticHint
+    git_add     '#7FCC7F'   git added lines      | GitSignsAdd
+    git_change  '#7FAFFF'   git changed lines    | GitSignsChange
+    git_delete  '#FC6161'   git deleted marker   | GitSignsDelete
     base        '#444444'   empty-cell dots
     file        '#AAAAAA'   left-side file path
     dim         '#444444'   zero-count diag numbers
     info_txt    '#BBBBBB'   right-side L:C / P%
+
+  The right column lists the highlight group fishbone reads when no
+  explicit override is given. Highlights refresh on `ColorScheme`, so
+  swapping themes automatically updates the bar.
 
 ==============================================================================
 4. MARKERS                                                 *fishbone-markers*
