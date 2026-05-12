@@ -46,6 +46,11 @@ local BOT_NAMES    = { 'error', 'warn', 'git_change', 'git_add', 'info', 'hint' 
 -- Diagnostic severity (1..4) -> bottom-layer name
 local DIAG_BOT     = { 'error', 'warn', 'info', 'hint' }
 
+-- Geometry snapshot captured on each render(), used by on_click() to map a
+-- mouse click on the bar back to a buffer line. Refreshed every redraw so
+-- it always matches what the user actually sees.
+local last = { left_w = 0, bar_width = 0, total_lines = 1 }
+
 local function top_colors() return {
   cursor   = config.colors.cursor,
   search   = config.colors.search,
@@ -200,8 +205,12 @@ function M.render()
 
   local bar_width = vim.o.columns - #left_plain - #right_plain
   if bar_width < 6 then
+    last.bar_width = 0
     return left_segment .. '%=' .. right_segment
   end
+  last.left_w     = #left_plain
+  last.bar_width  = bar_width
+  last.total_lines = total_lines
 
   local function lnum_to_col(lnum)
     local col = math.floor(((lnum - 1) / math.max(1, total_lines - 1))
@@ -271,8 +280,43 @@ function M.render()
     parts[#parts+1] = '%#' .. hl .. '#' .. ch
   end
 
-  return left_segment .. table.concat(parts) .. right_segment
+  local bar_segment = '%@FishboneClick@' .. table.concat(parts) .. '%X'
+  return left_segment .. bar_segment .. right_segment
 end
+
+-- Map a mouse position to a buffer line and jump there if the click landed
+-- inside the bar. Returns true on successful jump.
+local function jump_from_mouse(mp)
+  if last.bar_width <= 0 then return false end
+  local col_in_bar = mp.screencol - last.left_w
+  if col_in_bar < 1 or col_in_bar > last.bar_width then return false end
+  local total = math.max(1, last.total_lines)
+  local denom = math.max(1, last.bar_width - 1)
+  local lnum = math.floor((col_in_bar - 1) / denom * (total - 1) + 0.5) + 1
+  if lnum < 1 then lnum = 1 end
+  if lnum > total then lnum = total end
+  -- Drop a jumplist entry so <C-o> returns to the pre-click position.
+  vim.cmd("normal! m'")
+  vim.api.nvim_win_set_cursor(0, { lnum, 0 })
+  return true
+end
+
+-- Called via the `%@FishboneClick@` region in the rendered statusline.
+function M.on_click(_, _, button, _)
+  if button ~= 'l' then return end
+  jump_from_mouse(vim.fn.getmousepos())
+end
+
+-- The `%@FuncName@` format in 'statusline' expects a plain vimscript
+-- function name; wrap the Lua callback so it can be referenced by name.
+-- Works in terminal Neovim; Neovide ignores statusline click handlers, so
+-- the keymap fallback in setup() takes over there.
+vim.cmd([[
+  function! FishboneClick(minwid, clicks, button, mods) abort
+    call v:lua.require('fishbone').on_click(
+      \ a:minwid, a:clicks, a:button, a:mods)
+  endfunction
+]])
 
 function M.setup(opts)
   opts = opts or {}
@@ -283,6 +327,24 @@ function M.setup(opts)
 
   vim.opt.statusline = '%!v:lua.require("fishbone").render()'
   vim.opt.laststatus = 3
+
+  -- Neovide doesn't route clicks to %@...@ regions, so catch <LeftMouse>
+  -- ourselves on the global-statusline row (Neovide reports a non-zero
+  -- winid for the bar area, so detect by screenrow).
+  if vim.g.neovide then
+    vim.keymap.set({ 'n', 'i', 'v' }, '<LeftMouse>', function()
+      local mp = vim.fn.getmousepos()
+      if mp.screenrow == vim.o.lines - vim.o.cmdheight
+         and last.bar_width > 0 then
+        local col_in_bar = mp.screencol - last.left_w
+        if col_in_bar >= 1 and col_in_bar <= last.bar_width then
+          vim.schedule(function() jump_from_mouse(mp) end)
+          return ''
+        end
+      end
+      return '<LeftMouse>'
+    end, { expr = true })
+  end
 
   local group = vim.api.nvim_create_augroup('Fishbone', { clear = true })
   vim.api.nvim_create_autocmd(

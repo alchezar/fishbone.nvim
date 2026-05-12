@@ -58,6 +58,13 @@ require('fishbone').setup({
 
 Sets `laststatus=3` and installs a `%!` statusline expression.
 
+## Mouse
+
+Click anywhere on the bar to jump the cursor to that line. `<C-o>` returns
+to the previous position (a jumplist entry is added on click).
+
+Works in terminal Neovim and Neovide.
+
 ## Soft dependencies
 
 - [gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim) - git add/change markers.
