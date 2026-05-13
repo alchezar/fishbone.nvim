@@ -5,6 +5,8 @@ A horizontal "fishbone" position bar for Neovim's global statusline.
 Renders the whole file across the bottom row of the screen: every buffer
 line maps to a column on the bar. Like a one-line minimap.
 
+![fishbone.nvim demo](demo/demo.gif)
+
 ## Installation
 
 Requires Neovim 0.10+ and `laststatus=3` (set automatically).
