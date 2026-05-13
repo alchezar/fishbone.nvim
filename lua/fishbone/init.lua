@@ -266,8 +266,11 @@ function M.render()
     '  %' .. cnt_w .. 'd %' .. cnt_w .. 'd  %' .. line_w .. 'd:%' .. col_w
     .. 'd  %' .. pct_w .. 'd%% ',
     cnt[1], cnt[2], cursor_lnum, cursor_col, pct)
+  -- `%#StatusLine#` resets the highlight after the bar - otherwise the
+  -- two leading spaces inherit the bar's last cell bg (e.g. green from
+  -- a cursor-on-marker-line cell) and look like ghost trailing blocks.
   local right_segment = string.format(
-    '  %s %s  %%#FbnInfoTxt#%' .. line_w .. 'd:%-' .. col_w
+    '%%#StatusLine#  %s %s  %%#FbnInfoTxt#%' .. line_w .. 'd:%-' .. col_w
     .. 'd  %' .. pct_w .. 'd%%%% ',
     colored_count(cnt[1], 'FbnErrorTxt', cnt_w),
     colored_count(cnt[2], 'FbnWarnTxt',  cnt_w),
