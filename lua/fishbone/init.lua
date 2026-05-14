@@ -53,14 +53,22 @@ local defaults = {
   },
 }
 
+-- Names ending in `_dim` are the staged-hunk variants of their base name.
+-- They resolve as: user override -> THEME_LINK -> defaults.colors -> blend of
+-- the bright base color toward `base` (the bar's empty-cell color), so the
+-- staged markers look like dimmer cousins of the unstaged ones even when the
+-- theme doesn't expose dedicated staged highlight groups.
 local THEME_LINK = {
-  error      = 'DiagnosticError',
-  warn       = 'DiagnosticWarn',
-  info       = 'DiagnosticInfo',
-  hint       = 'DiagnosticHint',
-  git_add    = 'GitSignsAdd',
-  git_change = 'GitSignsChange',
-  git_delete = 'GitSignsDelete',
+  error          = 'DiagnosticError',
+  warn           = 'DiagnosticWarn',
+  info           = 'DiagnosticInfo',
+  hint           = 'DiagnosticHint',
+  git_add        = 'GitSignsAdd',
+  git_change     = 'GitSignsChange',
+  git_delete     = 'GitSignsDelete',
+  git_add_dim    = 'GitSignsStagedAdd',
+  git_change_dim = 'GitSignsStagedChange',
+  git_delete_dim = 'GitSignsStagedDelete',
 }
 
 local user_colors = {}
@@ -73,6 +81,16 @@ local function hl_fg(group)
   return fg
 end
 
+local function blend_hex(a, b, alpha)
+  local function p(s, i) return tonumber(s:sub(i, i + 1), 16) or 0 end
+  local ar, ag, ab = p(a, 2), p(a, 4), p(a, 6)
+  local br, bg, bb = p(b, 2), p(b, 4), p(b, 6)
+  return string.format('#%02X%02X%02X',
+    math.floor(ar * alpha + br * (1 - alpha) + 0.5),
+    math.floor(ag * alpha + bg * (1 - alpha) + 0.5),
+    math.floor(ab * alpha + bb * (1 - alpha) + 0.5))
+end
+
 local function color(name)
   if user_colors[name] then return user_colors[name] end
   local link = THEME_LINK[name]
@@ -80,7 +98,13 @@ local function color(name)
     local c = hl_fg(link)
     if c then return c end
   end
-  return defaults.colors[name]
+  if defaults.colors[name] then return defaults.colors[name] end
+  -- Auto-dim fallback for `<base>_dim` names: blend the bright color toward
+  -- the bar's empty-cell color so the marker reads as a desaturated echo.
+  local base_name = name:match('^(.-)_dim$')
+  if base_name then
+    return blend_hex(color(base_name), color('base'), 0.45)
+  end
 end
 
 local TOP_PRIORITY = { 'cursor', 'search', 'mark', 'viewport' }
@@ -106,26 +130,30 @@ local function top_colors() return {
   viewport = color('viewport'),
 } end
 local function bot_colors() return {
-  error      = color('error'),
-  warn       = color('warn'),
-  git_change = color('git_change'),
-  git_add    = color('git_add'),
-  info       = color('info'),
-  hint       = color('hint'),
+  error          = color('error'),
+  warn           = color('warn'),
+  git_change     = color('git_change'),
+  git_add        = color('git_add'),
+  git_change_dim = color('git_change_dim'),
+  git_add_dim    = color('git_add_dim'),
+  info           = color('info'),
+  hint           = color('hint'),
 } end
 
 local function setup_hl()
   local tc, bc = top_colors(), bot_colors()
-  -- `_D` variants overlay a red underline on the same glyph, used when a
-  -- delete coincides with another marker so the underlying glyph stays
-  -- visible. Empty cells use the dedicated `FbnDel` glyph (`▁`).
-  local function add_del(spec)
+  -- `_D` and `_DD` variants overlay a delete underline on the same glyph -
+  -- bright for unstaged deletes, dim for staged ones - so a delete next to
+  -- another marker keeps the underlying glyph visible. Empty cells use the
+  -- dedicated `FbnDel` / `FbnDelDim` glyphs (`▁`).
+  local function add_del(spec, dim)
     return vim.tbl_extend('force', spec,
-      { underline = true, sp = color('git_delete') })
+      { underline = true, sp = color(dim and 'git_delete_dim' or 'git_delete') })
   end
   local function reg(name, spec)
     vim.api.nvim_set_hl(0, name, spec)
-    vim.api.nvim_set_hl(0, name .. '_D', add_del(spec))
+    vim.api.nvim_set_hl(0, name .. '_D',  add_del(spec, false))
+    vim.api.nvim_set_hl(0, name .. '_DD', add_del(spec, true))
   end
 
   -- Top-only cells: `▀` fg=top_color
@@ -146,6 +174,7 @@ local function setup_hl()
   reg('FbnCursorBlock', { fg = color('cursor'), bold = true })
   vim.api.nvim_set_hl(0, 'FbnBase',     { fg = color('base') })
   vim.api.nvim_set_hl(0, 'FbnDel',      { fg = color('git_delete') })
+  vim.api.nvim_set_hl(0, 'FbnDelDim',   { fg = color('git_delete_dim') })
   vim.api.nvim_set_hl(0, 'FbnFile',     { fg = color('file') })
   vim.api.nvim_set_hl(0, 'FbnDim',      { fg = color('dim') })
   vim.api.nvim_set_hl(0, 'FbnInfoTxt',  { fg = color('info_txt') })
@@ -204,31 +233,45 @@ local function search_lines(bufnr)
   return hits
 end
 
--- Two maps for git status, both keyed by buffer line:
---   marks   - lnum -> 'git_add' | 'git_change' (rendered as a bottom layer)
---   deletes - lnum -> true                     (rendered as `▁` / underline)
+-- Four maps for git status, each keyed by buffer line:
+--   marks      - lnum -> 'git_add' | 'git_change' (unstaged, bottom layer)
+--   deletes    - lnum -> true                     (unstaged, `▁` / underline)
+--   marks_s    - lnum -> 'git_add' | 'git_change' (staged, dim variant)
+--   deletes_s  - lnum -> true                     (staged delete)
 -- Pure delete hunks have added.count == 0; we anchor the marker on the
 -- nearest surviving line (the line just before the gap, or line 1 for a
--- delete at the top of the file).
+-- delete at the top of the file). Staged hunks come from the internal
+-- gitsigns cache - there's no public API for them yet.
 local function git_marks(bufnr)
   local ok, gitsigns = pcall(require, 'gitsigns')
-  if not ok then return {}, {} end
-  local hunks = gitsigns.get_hunks and gitsigns.get_hunks(bufnr) or {}
+  if not ok then return {}, {}, {}, {} end
   local marks, deletes = {}, {}
-  for _, h in ipairs(hunks) do
-    local added_n   = h.added and h.added.count or 0
-    local removed_n = h.removed and h.removed.count or 0
-    if added_n > 0 then
-      local name = (h.type == 'change') and 'git_change' or 'git_add'
-      for lnum = h.added.start, h.added.start + added_n - 1 do
-        marks[lnum] = name
+  local marks_s, deletes_s = {}, {}
+
+  local function collect(hunks, m_out, d_out)
+    for _, h in ipairs(hunks or {}) do
+      local added_n   = h.added and h.added.count or 0
+      local removed_n = h.removed and h.removed.count or 0
+      if added_n > 0 then
+        local name = (h.type == 'change') and 'git_change' or 'git_add'
+        for lnum = h.added.start, h.added.start + added_n - 1 do
+          m_out[lnum] = name
+        end
+      end
+      if removed_n > 0 and added_n == 0 then
+        d_out[math.max(1, h.added and h.added.start or 1)] = true
       end
     end
-    if removed_n > 0 and added_n == 0 then
-      deletes[math.max(1, h.added and h.added.start or 1)] = true
-    end
   end
-  return marks, deletes
+
+  collect(gitsigns.get_hunks and gitsigns.get_hunks(bufnr) or {}, marks, deletes)
+
+  local cache_ok, gs_cache = pcall(require, 'gitsigns.cache')
+  if cache_ok and gs_cache.cache and gs_cache.cache[bufnr] then
+    collect(gs_cache.cache[bufnr].hunks_staged, marks_s, deletes_s)
+  end
+
+  return marks, deletes, marks_s, deletes_s
 end
 
 local function colored_count(n, sev_hl, width)
@@ -248,7 +291,7 @@ function M.render()
 
   local diags = vim.diagnostic.get(bufnr)
   local cnt = diag_counts(diags)
-  local git, git_del   = git_marks(bufnr)
+  local git, git_del, git_s, git_del_s = git_marks(bufnr)
   local marks_by_line  = mark_lines(bufnr)
   local search_by_line = search_lines(bufnr)
 
@@ -313,6 +356,12 @@ function M.render()
       put_bot(lnum_to_col(d.lnum + 1), name, prio)
     end
   end
+  -- Place staged first with a slightly looser priority so that any unstaged
+  -- marker on the same column wins (bright over dim).
+  for lnum, name in pairs(git_s) do
+    local prio = (name == 'git_change') and 3.5 or 4.5
+    put_bot(lnum_to_col(lnum), name .. '_dim', prio)
+  end
   for lnum, name in pairs(git) do
     local prio = (name == 'git_change') and 3 or 4
     put_bot(lnum_to_col(lnum), name, prio)
@@ -322,8 +371,11 @@ function M.render()
   for lnum in pairs(search_by_line) do search_col[lnum_to_col(lnum)] = true end
   local mark_col = {}
   for lnum in pairs(marks_by_line) do mark_col[lnum_to_col(lnum)] = true end
+  -- `del_col[col]` is 'bright' for an unstaged delete, 'dim' for staged.
+  -- Unstaged is written last so it overrides a co-located staged marker.
   local del_col = {}
-  for lnum in pairs(git_del) do del_col[lnum_to_col(lnum)] = true end
+  for lnum in pairs(git_del_s) do del_col[lnum_to_col(lnum)] = 'dim' end
+  for lnum in pairs(git_del)   do del_col[lnum_to_col(lnum)] = 'bright' end
 
   local parts = {}
   for col = 1, bar_width do
@@ -340,6 +392,7 @@ function M.render()
 
     local b = bot[col] and bot[col].name or nil
 
+    local del = del_col[col]
     local hl, ch
     if top == 'cursor' and not b then
       hl, ch = 'FbnCursorBlock', '█'
@@ -349,16 +402,19 @@ function M.render()
       hl, ch = 'FbnT_' .. top, '▀'
     elseif b then
       hl, ch = 'FbnB_' .. b, '▄'
-    elseif del_col[col] then
+    elseif del then
       -- Empty cell on a deleted line: use the dedicated `▁` glyph so the
       -- delete is unmistakable even without any other marker.
-      hl, ch = 'FbnDel', '▁'
+      hl, ch = (del == 'dim') and 'FbnDelDim' or 'FbnDel', '▁'
     else
       hl, ch = 'FbnBase', '·'
     end
-    -- For non-empty cells coinciding with a delete, overlay a red underline
-    -- on top of the existing glyph so we don't lose the original marker.
-    if del_col[col] and ch ~= '▁' then hl = hl .. '_D' end
+    -- For non-empty cells coinciding with a delete, overlay a delete
+    -- underline on top of the existing glyph so we don't lose the original
+    -- marker. `_DD` carries the dim underline used for staged deletes.
+    if del and ch ~= '▁' then
+      hl = hl .. ((del == 'dim') and '_DD' or '_D')
+    end
     parts[#parts+1] = '%#' .. hl .. '#' .. ch
   end
 
