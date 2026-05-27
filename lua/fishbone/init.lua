@@ -73,6 +73,20 @@ local THEME_LINK = {
 
 local user_colors = {}
 
+-- Names of extmark namespaces to scan for bookmarks in mark_lines(). Filled
+-- from `opts.mark_namespaces`; lets a plugin that stores bookmarks as extmarks
+-- (rather than via marks.nvim) light up the yellow mark layer. Resolved to ids
+-- lazily and cached, because the owning plugin may create the namespace after
+-- fishbone's setup() has run.
+local mark_namespaces = {}
+local ns_id_cache = {}
+local function ns_id(name)
+  if ns_id_cache[name] then return ns_id_cache[name] end
+  local id = vim.api.nvim_get_namespaces()[name]
+  if id then ns_id_cache[name] = id end
+  return id
+end
+
 local function hl_fg(group)
   local id = vim.fn.hlID(group)
   if id == 0 then return nil end
@@ -188,7 +202,8 @@ local function diag_counts(diags)
   return c
 end
 
--- Set of buffer lines that hold a vim a-z mark or a marks.nvim bookmark.
+-- Set of buffer lines that hold a vim a-z mark, a marks.nvim bookmark, or an
+-- extmark in one of `opts.mark_namespaces`.
 local function mark_lines(bufnr)
   local out = {}
   for _, m in ipairs(vim.fn.getmarklist(bufnr)) do
@@ -205,6 +220,15 @@ local function mark_lines(bufnr)
       local buf_marks = group.marks and group.marks[bufnr] or nil
       if buf_marks then
         for lnum, _ in pairs(buf_marks) do out[lnum] = true end
+      end
+    end
+  end
+  -- Extmark-based bookmarks: each extmark's row (0-based) is a marked line.
+  for _, name in ipairs(mark_namespaces) do
+    local id = ns_id(name)
+    if id then
+      for _, e in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, id, 0, -1, {})) do
+        out[e[2] + 1] = true
       end
     end
   end
@@ -468,6 +492,7 @@ vim.cmd([[
 function M.setup(opts)
   opts = opts or {}
   user_colors = opts.colors or {}
+  mark_namespaces = opts.mark_namespaces or {}
   setup_hl()
 
   vim.opt.statusline = '%!v:lua.require("fishbone").render()'

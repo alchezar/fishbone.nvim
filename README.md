@@ -44,7 +44,7 @@ Each cell composes a top half (overview) and a bottom half (signals):
 | -------- | ------ | ------------------------------------- |
 | cursor   | white  | current cursor line                   |
 | search   | pink   | lines matching the active `/` pattern |
-| mark     | yellow | vim a-z marks, marks.nvim bookmarks   |
+| mark     | yellow | vim a-z marks, marks.nvim bookmarks, extmark bookmarks |
 | viewport | silver | lines currently visible on screen     |
 
 **Bottom half** (`▄`, highest wins):
@@ -115,6 +115,21 @@ require('fishbone').setup({
   },
 })
 ```
+
+### Extmark bookmarks
+
+The yellow mark layer follows vim a-z marks and marks.nvim bookmarks out of
+the box. If you keep bookmarks as extmarks in your own namespace instead, list
+the namespace name(s) and fishbone lights up those lines too:
+
+```lua
+require('fishbone').setup({
+  mark_namespaces = { 'user_bookmarks' },
+})
+```
+
+Every extmark in a listed namespace marks its line; the namespace id is
+resolved lazily, so it works even if the owning plugin loads after fishbone.
 
 `setup()` also sets `laststatus=3` and installs a `%!` statusline expression.
 
