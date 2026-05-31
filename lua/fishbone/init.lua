@@ -4,10 +4,13 @@
 -- a composition of a top half (overview) and a bottom half (signals):
 --
 -- Top-half (z-ordered, highest wins):
---   cursor   white   ▀
---   search   pink    ▀ - line currently matches the active /search pattern
---   mark     yellow  ▀ - vim a-z mark or marks.nvim bookmark
---   viewport silver  ▀
+--   cursor    white   ▀
+--   search    pink    ▀ - line currently matches the active /search pattern
+--   mark      yellow  ▀ - vim a-z mark or marks.nvim bookmark
+--   selection blue    ▀ - lines covered by the active visual selection
+--   viewport  silver  ▀
+-- Where selection and viewport overlap, the cell uses `selection_view`, a
+-- 50/50 blend of the two, so the intersection reads as its own tone.
 --
 -- Bottom-half (z-ordered, highest wins):
 --   error    red     ▄
@@ -38,6 +41,7 @@ local defaults = {
     cursor     = '#FFFFFF',
     search     = '#FF77AA',
     mark       = '#FFD866',
+    selection  = '#6CA0C8',
     viewport   = '#888888',
     error      = '#FC6161',
     warn       = '#FFA348',
@@ -53,11 +57,8 @@ local defaults = {
   },
 }
 
--- Names ending in `_dim` are the staged-hunk variants of their base name.
--- They resolve as: user override -> THEME_LINK -> defaults.colors -> blend of
--- the bright base color toward `base` (the bar's empty-cell color), so the
--- staged markers look like dimmer cousins of the unstaged ones even when the
--- theme doesn't expose dedicated staged highlight groups.
+-- `_dim` names are staged-hunk variants: resolve like their base name, else
+-- auto-blend the bright color toward `base` (see color()).
 local THEME_LINK = {
   error          = 'DiagnosticError',
   warn           = 'DiagnosticWarn',
@@ -73,11 +74,8 @@ local THEME_LINK = {
 
 local user_colors = {}
 
--- Names of extmark namespaces to scan for bookmarks in mark_lines(). Filled
--- from `opts.mark_namespaces`; lets a plugin that stores bookmarks as extmarks
--- (rather than via marks.nvim) light up the yellow mark layer. Resolved to ids
--- lazily and cached, because the owning plugin may create the namespace after
--- fishbone's setup() has run.
+-- Extmark namespaces (from `opts.mark_namespaces`) scanned for bookmarks in
+-- mark_lines(). Ids resolved lazily/cached - the owner may create the ns late.
 local mark_namespaces = {}
 local ns_id_cache = {}
 local function ns_id(name)
@@ -121,52 +119,53 @@ local function color(name)
   end
 end
 
-local TOP_PRIORITY = { 'cursor', 'search', 'mark', 'viewport' }
-local BOT_NAMES    = { 'error', 'warn', 'git_change', 'git_add', 'info', 'hint' }
 -- Diagnostic severity (1..4) -> bottom-layer name
-local DIAG_BOT     = { 'error', 'warn', 'info', 'hint' }
+local DIAG_BOT = { 'error', 'warn', 'info', 'hint' }
 
--- Geometry snapshot captured on each render(), used by on_click() to map a
--- mouse click on the bar back to a buffer line. Refreshed every redraw so
--- it always matches what the user actually sees.
-local last = { left_w = 0, bar_width = 0, total_lines = 1 }
+-- Geometry from the last render(), so on_click() can map a click back to a line.
+local last     = { left_w = 0, bar_width = 0, total_lines = 1 }
 
--- True between a press that landed on the bar and the matching release.
--- While set, drag events steer the cursor regardless of mouse Y, and X is
--- clamped to bar bounds - so the user can wander above or below the bar
--- without losing the drag.
+-- Set between a bar press and its release: drag ticks steer the cursor by X
+-- (clamped to the bar) regardless of mouse Y.
 local dragging = false
 
-local function top_colors() return {
-  cursor   = color('cursor'),
-  search   = color('search'),
-  mark     = color('mark'),
-  viewport = color('viewport'),
-} end
-local function bot_colors() return {
-  error          = color('error'),
-  warn           = color('warn'),
-  git_change     = color('git_change'),
-  git_add        = color('git_add'),
-  git_change_dim = color('git_change_dim'),
-  git_add_dim    = color('git_add_dim'),
-  info           = color('info'),
-  hint           = color('hint'),
-} end
+local function top_colors()
+  local sel, vp = color('selection'), color('viewport')
+  return {
+    cursor         = color('cursor'),
+    search         = color('search'),
+    mark           = color('mark'),
+    selection      = sel,
+    -- Drawn where selection and viewport overlap: a 50/50 blend so the
+    -- intersection reads as a distinct tone between the two bands.
+    selection_view = blend_hex(sel, vp, 0.5),
+    viewport       = vp,
+  }
+end
+local function bot_colors()
+  return {
+    error          = color('error'),
+    warn           = color('warn'),
+    git_change     = color('git_change'),
+    git_add        = color('git_add'),
+    git_change_dim = color('git_change_dim'),
+    git_add_dim    = color('git_add_dim'),
+    info           = color('info'),
+    hint           = color('hint'),
+  }
+end
 
 local function setup_hl()
   local tc, bc = top_colors(), bot_colors()
-  -- `_D` and `_DD` variants overlay a delete underline on the same glyph -
-  -- bright for unstaged deletes, dim for staged ones - so a delete next to
-  -- another marker keeps the underlying glyph visible. Empty cells use the
-  -- dedicated `FbnDel` / `FbnDelDim` glyphs (`▁`).
+  -- `_D`/`_DD` variants add a delete underline (bright/dim) over the glyph, so
+  -- a delete next to another marker stays visible. Empty cells use `▁` instead.
   local function add_del(spec, dim)
     return vim.tbl_extend('force', spec,
       { underline = true, sp = color(dim and 'git_delete_dim' or 'git_delete') })
   end
   local function reg(name, spec)
     vim.api.nvim_set_hl(0, name, spec)
-    vim.api.nvim_set_hl(0, name .. '_D',  add_del(spec, false))
+    vim.api.nvim_set_hl(0, name .. '_D', add_del(spec, false))
     vim.api.nvim_set_hl(0, name .. '_DD', add_del(spec, true))
   end
 
@@ -186,14 +185,14 @@ local function setup_hl()
     end
   end
   reg('FbnCursorBlock', { fg = color('cursor'), bold = true })
-  vim.api.nvim_set_hl(0, 'FbnBase',     { fg = color('base') })
-  vim.api.nvim_set_hl(0, 'FbnDel',      { fg = color('git_delete') })
-  vim.api.nvim_set_hl(0, 'FbnDelDim',   { fg = color('git_delete_dim') })
-  vim.api.nvim_set_hl(0, 'FbnFile',     { fg = color('file') })
-  vim.api.nvim_set_hl(0, 'FbnDim',      { fg = color('dim') })
-  vim.api.nvim_set_hl(0, 'FbnInfoTxt',  { fg = color('info_txt') })
+  vim.api.nvim_set_hl(0, 'FbnBase', { fg = color('base') })
+  vim.api.nvim_set_hl(0, 'FbnDel', { fg = color('git_delete') })
+  vim.api.nvim_set_hl(0, 'FbnDelDim', { fg = color('git_delete_dim') })
+  vim.api.nvim_set_hl(0, 'FbnFile', { fg = color('file') })
+  vim.api.nvim_set_hl(0, 'FbnDim', { fg = color('dim') })
+  vim.api.nvim_set_hl(0, 'FbnInfoTxt', { fg = color('info_txt') })
   vim.api.nvim_set_hl(0, 'FbnErrorTxt', { fg = color('error') })
-  vim.api.nvim_set_hl(0, 'FbnWarnTxt',  { fg = color('warn') })
+  vim.api.nvim_set_hl(0, 'FbnWarnTxt', { fg = color('warn') })
 end
 
 local function diag_counts(diags)
@@ -244,8 +243,8 @@ local function search_lines(bufnr)
   if pat == '' then return {} end
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
   if search_cache.bufnr == bufnr
-     and search_cache.tick == tick
-     and search_cache.pat == pat then
+      and search_cache.tick == tick
+      and search_cache.pat == pat then
     return search_cache.lines
   end
   local hits = {}
@@ -257,15 +256,9 @@ local function search_lines(bufnr)
   return hits
 end
 
--- Four maps for git status, each keyed by buffer line:
---   marks      - lnum -> 'git_add' | 'git_change' (unstaged, bottom layer)
---   deletes    - lnum -> true                     (unstaged, `▁` / underline)
---   marks_s    - lnum -> 'git_add' | 'git_change' (staged, dim variant)
---   deletes_s  - lnum -> true                     (staged delete)
--- Pure delete hunks have added.count == 0; we anchor the marker on the
--- nearest surviving line (the line just before the gap, or line 1 for a
--- delete at the top of the file). Staged hunks come from the internal
--- gitsigns cache - there's no public API for them yet.
+-- Returns four line-keyed maps: unstaged/staged change-add marks and deletes.
+-- Pure-delete hunks (added.count==0) anchor on the line before the gap (or 1).
+-- Staged hunks come from gitsigns' internal cache - no public API yet.
 local function git_marks(bufnr)
   local ok, gitsigns = pcall(require, 'gitsigns')
   if not ok then return {}, {}, {}, {} end
@@ -304,57 +297,66 @@ local function colored_count(n, sev_hl, width)
 end
 
 function M.render()
-  local bufnr = vim.api.nvim_win_get_buf(0)
+  local bufnr       = vim.api.nvim_win_get_buf(0)
   local total_lines = math.max(1, vim.api.nvim_buf_line_count(bufnr))
   local cursor_lnum = vim.fn.line('.')
   local cursor_col  = vim.fn.col('.')
-  local pct = math.floor((cursor_lnum / total_lines) * 100 + 0.5)
+  local pct         = math.floor((cursor_lnum / total_lines) * 100 + 0.5)
 
-  local view_top = vim.fn.line('w0')
-  local view_bot = vim.fn.line('w$')
+  local view_top    = vim.fn.line('w0')
+  local view_bot    = vim.fn.line('w$')
 
-  local diags = vim.diagnostic.get(bufnr)
-  local cnt = diag_counts(diags)
+  -- Active visual selection range (any visual mode), else nil. `line('v')`
+  -- is the selection's anchor; the cursor is the other end.
+  local sel_top, sel_bot
+  local m           = vim.fn.mode()
+  if m == 'v' or m == 'V' or m == '\22' then
+    local anchor = vim.fn.line('v')
+    sel_top = math.min(anchor, cursor_lnum)
+    sel_bot = math.max(anchor, cursor_lnum)
+  end
+
+  local diags                          = vim.diagnostic.get(bufnr)
+  local cnt                            = diag_counts(diags)
   local git, git_del, git_s, git_del_s = git_marks(bufnr)
-  local marks_by_line  = mark_lines(bufnr)
-  local search_by_line = search_lines(bufnr)
+  local marks_by_line                  = mark_lines(bufnr)
+  local search_by_line                 = search_lines(bufnr)
 
-  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ':~:.')
+  local file                           = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ':~:.')
   if file == '' then file = '[No Name]' end
-  local modified = vim.bo.modified and ' [+]' or ''
-  local left_plain = ' ' .. file .. modified .. '  '
-  local left_segment = string.format('%%#FbnFile# %s%s  ', file, modified)
+  local modified      = vim.bo.modified and ' [+]' or ''
+  local left_plain    = ' ' .. file .. modified .. '  '
+  local left_segment  = string.format('%%#FbnFile# %s%s  ', file, modified)
 
-  local cnt_w  = 3
-  local line_w = math.max(3, #tostring(total_lines))
-  local col_w  = 3
-  local pct_w  = 3
-  local right_plain = string.format(
+  local cnt_w         = 3
+  local line_w        = math.max(3, #tostring(total_lines))
+  local col_w         = 3
+  local pct_w         = 3
+  local right_plain   = string.format(
     '  %' .. cnt_w .. 'd %' .. cnt_w .. 'd  %' .. line_w .. 'd:%' .. col_w
     .. 'd  %' .. pct_w .. 'd%% ',
     cnt[1], cnt[2], cursor_lnum, cursor_col, pct)
-  -- `%#StatusLine#` resets the highlight after the bar - otherwise the
-  -- two leading spaces inherit the bar's last cell bg (e.g. green from
-  -- a cursor-on-marker-line cell) and look like ghost trailing blocks.
+  -- `%#StatusLine#` resets the hl after the bar, else the trailing spaces
+  -- inherit the last cell's bg and look like ghost blocks.
   local right_segment = string.format(
     '%%#StatusLine#  %s %s  %%#FbnInfoTxt#%' .. line_w .. 'd:%-' .. col_w
     .. 'd  %' .. pct_w .. 'd%%%% ',
     colored_count(cnt[1], 'FbnErrorTxt', cnt_w),
-    colored_count(cnt[2], 'FbnWarnTxt',  cnt_w),
+    colored_count(cnt[2], 'FbnWarnTxt', cnt_w),
     cursor_lnum, cursor_col, pct)
 
-  local bar_width = vim.o.columns - #left_plain - #right_plain
+  local bar_width     = vim.o.columns - #left_plain - #right_plain
   if bar_width < 6 then
     last.bar_width = 0
     return left_segment .. '%=' .. right_segment
   end
-  last.left_w     = #left_plain
-  last.bar_width  = bar_width
+  last.left_w      = #left_plain
+  last.bar_width   = bar_width
   last.total_lines = total_lines
 
   local function lnum_to_col(lnum)
     local col = math.floor(((lnum - 1) / math.max(1, total_lines - 1))
-                           * (bar_width - 1)) + 1
+      * (bar_width - 1)) + 1
     if col < 1 then return 1 end
     if col > bar_width then return bar_width end
     return col
@@ -363,9 +365,11 @@ function M.render()
   local view_start = lnum_to_col(view_top)
   local view_end   = lnum_to_col(view_bot)
   local cursor_x   = lnum_to_col(cursor_lnum)
+  local sel_start  = sel_top and lnum_to_col(sel_top)
+  local sel_end    = sel_bot and lnum_to_col(sel_bot)
 
   -- Per-column resolved bottom layer (lower prio number wins).
-  local bot = {}
+  local bot        = {}
   local function put_bot(col, name, prio)
     local cur = bot[col]
     if not cur or cur.prio > prio then
@@ -399,7 +403,7 @@ function M.render()
   -- Unstaged is written last so it overrides a co-located staged marker.
   local del_col = {}
   for lnum in pairs(git_del_s) do del_col[lnum_to_col(lnum)] = 'dim' end
-  for lnum in pairs(git_del)   do del_col[lnum_to_col(lnum)] = 'bright' end
+  for lnum in pairs(git_del) do del_col[lnum_to_col(lnum)] = 'bright' end
 
   local parts = {}
   for col = 1, bar_width do
@@ -410,6 +414,10 @@ function M.render()
       top = 'search'
     elseif mark_col[col] then
       top = 'mark'
+    elseif sel_start and col >= sel_start and col <= sel_end then
+      -- Blend in the overlap with the viewport band; pure selection outside it.
+      top = (col >= view_start and col <= view_end) and 'selection_view'
+          or 'selection'
     elseif col >= view_start and col <= view_end then
       top = 'viewport'
     end
@@ -433,24 +441,20 @@ function M.render()
     else
       hl, ch = 'FbnBase', '·'
     end
-    -- For non-empty cells coinciding with a delete, overlay a delete
-    -- underline on top of the existing glyph so we don't lose the original
-    -- marker. `_DD` carries the dim underline used for staged deletes.
+    -- Overlay the delete underline on an existing glyph so the marker survives
+    -- (`_DD` is the dim variant for staged deletes).
     if del and ch ~= '▁' then
       hl = hl .. ((del == 'dim') and '_DD' or '_D')
     end
-    parts[#parts+1] = '%#' .. hl .. '#' .. ch
+    parts[#parts + 1] = '%#' .. hl .. '#' .. ch
   end
 
   local bar_segment = '%@FishboneClick@' .. table.concat(parts) .. '%X'
   return left_segment .. bar_segment .. right_segment
 end
 
--- Map a mouse position to a buffer line and jump there. `add_jump` controls
--- whether to push a jumplist entry: true for an initial click (so <C-o>
--- works), false for drag ticks (otherwise every drag tick spams the list).
--- `clamp` clips the horizontal position to bar bounds; used during drag so
--- mouse Y can roam freely and X past the edges sticks at the extreme.
+-- Map a mouse position to a line and jump. `add_jump` pushes a jumplist entry
+-- (click yes, drag no); `clamp` clips X to the bar so drag Y can roam freely.
 local function jump_from_mouse(mp, add_jump, clamp)
   if last.bar_width <= 0 then return false end
   local col_in_bar = mp.screencol - last.left_w
@@ -478,10 +482,8 @@ function M.on_click(_, _, button, _)
   end
 end
 
--- The `%@FuncName@` format in 'statusline' expects a plain vimscript
--- function name; wrap the Lua callback so it can be referenced by name.
--- Works in terminal Neovim; Neovide ignores statusline click handlers, so
--- the keymap fallback in setup() takes over there.
+-- `%@Fn@` needs a vimscript function name; wrap the Lua callback. Terminal
+-- only - Neovide ignores statusline clicks, so setup()'s keymap covers it.
 vim.cmd([[
   function! FishboneClick(minwid, clicks, button, mods) abort
     call v:lua.require('fishbone').on_click(
@@ -498,14 +500,13 @@ function M.setup(opts)
   vim.opt.statusline = '%!v:lua.require("fishbone").render()'
   vim.opt.laststatus = 3
 
-  -- Neovide doesn't route clicks to %@...@ regions, so catch <LeftMouse>
-  -- ourselves on the global-statusline row (Neovide reports a non-zero
-  -- winid for the bar area, so detect by screenrow).
+  -- Neovide doesn't route clicks to %@...@ regions; catch <LeftMouse> on the
+  -- statusline row ourselves (detected by screenrow).
   if vim.g.neovide then
     vim.keymap.set({ 'n', 'i', 'v' }, '<LeftMouse>', function()
       local mp = vim.fn.getmousepos()
       if mp.screenrow == vim.o.lines - vim.o.cmdheight
-         and last.bar_width > 0 then
+          and last.bar_width > 0 then
         local col_in_bar = mp.screencol - last.left_w
         if col_in_bar >= 1 and col_in_bar <= last.bar_width then
           dragging = true
@@ -518,10 +519,8 @@ function M.setup(opts)
     end, { expr = true })
   end
 
-  -- Drag and release: work in both terminal and Neovide. %@..@ regions
-  -- don't receive these events, so a keymap is the only path. Once a drag
-  -- starts on the bar, every drag tick repositions the cursor regardless
-  -- of mouse Y; X is clamped to bar bounds.
+  -- Drag/release via keymap (both UIs): %@..@ regions don't get these events.
+  -- Once a drag starts on the bar, ticks reposition by X (clamped), Y ignored.
   vim.keymap.set({ 'n', 'i', 'v' }, '<LeftDrag>', function()
     if dragging then
       local mp = vim.fn.getmousepos()
@@ -542,11 +541,13 @@ function M.setup(opts)
   local group = vim.api.nvim_create_augroup('Fishbone', { clear = true })
   vim.api.nvim_create_autocmd(
     { 'CursorMoved', 'CursorMovedI', 'WinScrolled', 'BufEnter',
-      'DiagnosticChanged', 'VimResized', 'TextChanged', 'TextChangedI' },
+      'DiagnosticChanged', 'VimResized', 'TextChanged', 'TextChangedI',
+      'ModeChanged' },
     { group = group, callback = function() vim.cmd('redrawstatus') end }
   )
   vim.api.nvim_create_autocmd('User', {
-    group = group, pattern = 'GitSignsUpdate',
+    group = group,
+    pattern = 'GitSignsUpdate',
     callback = function() vim.cmd('redrawstatus') end,
   })
   -- Search pattern changes redraw via CmdlineLeave on /, ?, and :nohlsearch.
