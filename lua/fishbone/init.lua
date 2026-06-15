@@ -22,6 +22,8 @@
 --
 -- Cells: `▀` (fg=top, bg=bot) when both halves carry info, `▄` (fg=bot) when
 -- only bottom, `▀` (fg=top) when only top, `█` for cursor alone, `·` empty.
+-- An otherwise-empty cell whose line reads as a visual divider (a comment
+-- rule like `// ----`, `# === desc ===`) draws `|` instead of the `·` dot.
 --
 -- Git deletes are an overlay: a column anchored to a deleted-line gap is
 -- drawn as `▁` (red) on empty cells, and as the cell's existing glyph with
@@ -51,9 +53,21 @@ local defaults = {
     git_change = '#7FAFFF',
     git_delete = '#FC6161',
     base       = '#444444',
+    divider    = '#6B7280',
     file       = '#AAAAAA',
     dim        = '#444444',
     info_txt   = '#BBBBBB',
+  },
+  -- Lines that read as a visual divider - a comment rule like `// --------`,
+  -- `# ==== section ====` or `-- -- desc --` - draw `glyph` instead of the
+  -- empty-cell dot, in the `divider` color. A line matches when it holds a run
+  -- of `min_run`+ identical chars from `chars` (box-drawing dashes included).
+  -- Set `enabled=false` to turn the layer off.
+  dividers = {
+    enabled = true,
+    min_run = 4,
+    glyph   = '|',
+    chars   = { '-', '=', '_', '~', '*', '#', '─', '═', '━' },
   },
 }
 
@@ -73,6 +87,9 @@ local THEME_LINK = {
 }
 
 local user_colors = {}
+
+-- Divider-line detection config, populated from `opts.dividers` in setup().
+local dividers = defaults.dividers
 
 -- Extmark namespaces (from `opts.mark_namespaces`) scanned for bookmarks in
 -- mark_lines(). Ids resolved lazily/cached - the owner may create the ns late.
@@ -186,6 +203,7 @@ local function setup_hl()
   end
   reg('FbnCursorBlock', { fg = color('cursor'), bold = true })
   vim.api.nvim_set_hl(0, 'FbnBase', { fg = color('base') })
+  vim.api.nvim_set_hl(0, 'FbnDivider', { fg = color('divider') })
   vim.api.nvim_set_hl(0, 'FbnDel', { fg = color('git_delete') })
   vim.api.nvim_set_hl(0, 'FbnDelDim', { fg = color('git_delete_dim') })
   vim.api.nvim_set_hl(0, 'FbnFile', { fg = color('file') })
@@ -253,6 +271,35 @@ local function search_lines(bufnr)
     if vim.fn.match(line, pat) >= 0 then hits[i] = true end
   end
   search_cache = { bufnr = bufnr, tick = tick, pat = pat, lines = hits }
+  return hits
+end
+
+-- A line reads as a divider when it carries a run of `dividers.min_run`+ of any
+-- single char in `dividers.chars`. Plain (non-pattern) find, so magic chars and
+-- multi-byte box-drawing dashes both match on their literal bytes.
+local function is_divider(line)
+  local n = dividers.min_run or 4
+  for _, ch in ipairs(dividers.chars or {}) do
+    if line:find(string.rep(ch, n), 1, true) then return true end
+  end
+  return false
+end
+
+-- Divider-line set, cached on (bufnr, tick) so we rescan only when the buffer
+-- changes, not on every statusline redraw.
+local divider_cache = { bufnr = -1, tick = -1, lines = {} }
+local function divider_lines(bufnr)
+  if not dividers.enabled then return {} end
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  if divider_cache.bufnr == bufnr and divider_cache.tick == tick then
+    return divider_cache.lines
+  end
+  local hits = {}
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for i, line in ipairs(lines) do
+    if is_divider(line) then hits[i] = true end
+  end
+  divider_cache = { bufnr = bufnr, tick = tick, lines = hits }
   return hits
 end
 
@@ -404,6 +451,10 @@ function M.render()
   local del_col = {}
   for lnum in pairs(git_del_s) do del_col[lnum_to_col(lnum)] = 'dim' end
   for lnum in pairs(git_del) do del_col[lnum_to_col(lnum)] = 'bright' end
+  -- Columns holding a divider line: drawn as `glyph` only where the cell would
+  -- otherwise be an empty `·` (the lowest-priority layer).
+  local divider_col = {}
+  for lnum in pairs(divider_lines(bufnr)) do divider_col[lnum_to_col(lnum)] = true end
 
   local parts = {}
   for col = 1, bar_width do
@@ -438,6 +489,8 @@ function M.render()
       -- Empty cell on a deleted line: use the dedicated `▁` glyph so the
       -- delete is unmistakable even without any other marker.
       hl, ch = (del == 'dim') and 'FbnDelDim' or 'FbnDel', '▁'
+    elseif divider_col[col] then
+      hl, ch = 'FbnDivider', dividers.glyph or '|'
     else
       hl, ch = 'FbnBase', '·'
     end
@@ -495,6 +548,9 @@ function M.setup(opts)
   opts = opts or {}
   user_colors = opts.colors or {}
   mark_namespaces = opts.mark_namespaces or {}
+  -- Shallow-merge: a user `dividers.chars` replaces the default list wholesale.
+  dividers = vim.tbl_extend('force', defaults.dividers, opts.dividers or {})
+  divider_cache.bufnr = -1 -- new config may change matches at the same tick
   setup_hl()
 
   vim.opt.statusline = '%!v:lua.require("fishbone").render()'

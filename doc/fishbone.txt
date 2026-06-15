@@ -68,6 +68,7 @@ require('fishbone').setup({opts})
     git_change_dim  auto-blend  staged change       | GitSignsStagedChange
     git_delete_dim  auto-blend  staged delete       | GitSignsStagedDelete
     base            '#444444'   empty-cell dots
+    divider         '#6B7280'   divider-line `|` glyph
     file            '#AAAAAA'   left-side file path
     dim             '#444444'   zero-count diag numbers
     info_txt        '#BBBBBB'   right-side L:C / P%
@@ -75,6 +76,25 @@ require('fishbone').setup({opts})
   The right column lists the highlight group fishbone reads when no
   explicit override is given. Highlights refresh on `ColorScheme`, so
   swapping themes automatically updates the bar.
+
+`opts.dividers`                                   *fishbone-config-dividers*
+
+  Controls the divider layer (see |fishbone-markers|). Defaults: >lua
+    dividers = {
+      enabled = true,
+      min_run = 4,
+      glyph   = '|',
+      chars   = { '-', '=', '_', '~', '*', '#', '─', '═', '━' },
+    }
+<
+    enabled   draw `|` on divider lines (false turns the layer off)
+    min_run   minimum run of identical chars for a line to count
+    glyph     glyph drawn on a divider column
+    chars     divider characters; a user list replaces the default one
+
+  Lowering `min_run` catches shorter rules but risks false positives such
+  as `===` or `--i`. The `divider` color (see |fishbone-config-colors|)
+  sets the glyph color.
 
 ==============================================================================
 4. MARKERS                                                 *fishbone-markers*
@@ -96,6 +116,13 @@ Bottom half - `▄` (highest wins):
 
 Cells with both halves use `▀` with fg=top, bg=bottom. Cursor alone uses
 `█`. Empty cells use `·`.
+
+Dividers are the lowest layer. A line that reads as a visual divider - a
+comment rule like `// --------`, `# ==== section ====` or `-- -- desc --` -
+draws `|` instead of the `·` dot. A line matches when it holds a run of
+`min_run`+ identical divider characters (`- = _ ~ * #` and the box-drawing
+dashes `─ ═ ━`). Any other marker on the column wins; the divider only
+replaces an otherwise-empty cell. Configure via |fishbone-config-dividers|.
 
 Deletes are an overlay. A column anchored to a removed git hunk gets `▁`
 red on empty cells, or a red underline under the cell's existing glyph on
@@ -136,6 +163,7 @@ needed:
   *_DD                  same, with dim (staged) delete underline
   FbnCursorBlock        cursor alone (`█`)
   FbnBase               empty-cell glyph (`·`)
+  FbnDivider            divider-line glyph (`|`)
   FbnDel                empty-cell delete marker (`▁`)
   FbnDelDim             empty-cell staged-delete marker (`▁`)
   FbnFile               left-side path

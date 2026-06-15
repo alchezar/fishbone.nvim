@@ -66,6 +66,14 @@ its own tone.
 Cells with both halves use `▀` with fg=top, bg=bottom. Cursor with no
 bottom layer uses `█`. Empty cells use `·`.
 
+**Dividers** are the lowest layer. A line that reads as a visual divider - a
+comment rule like `// --------`, `# ==== section ====` or `-- ── desc ──` -
+draws `|` instead of the `·` dot, so the file's section breaks show up as
+faint uprights along the bar. A line matches when it holds a run of four or
+more identical divider characters (`- = _ ~ * #` and the box-drawing dashes
+`─ ═ ━`). Any other marker on the column (cursor, viewport, diagnostic, git)
+wins over it - the divider only replaces an otherwise-empty cell.
+
 **Deletes** are an overlay. A line adjacent to a removed git hunk gets a
 red `▁` on empty cells, or a red underline added under the cell's existing
 glyph - so a delete next to a cursor or diagnostic doesn't hide it.
@@ -137,6 +145,26 @@ require('fishbone').setup({
 Every extmark in a listed namespace marks its line; the namespace id is
 resolved lazily, so it works even if the owning plugin loads after fishbone.
 
+### Dividers
+
+Section-divider comments show on the bar as `|`. The defaults match most
+styles out of the box; tune or disable the layer via `opts.dividers`:
+
+```lua
+require('fishbone').setup({
+  colors = { divider = '#6B7280' },  -- color of the `|` glyph
+  dividers = {
+    enabled = true,                  -- set false to turn the layer off
+    min_run = 4,                     -- min run of identical chars to match
+    glyph   = '|',                   -- glyph drawn on a divider column
+    chars   = { '-', '=', '_', '~', '*', '#', '─', '═', '━' },
+  },
+})
+```
+
+A custom `chars` list replaces the default list wholesale. Lowering `min_run`
+catches shorter rules but risks false positives (e.g. `===`, `--i`).
+
 `setup()` also sets `laststatus=3` and installs a `%!` statusline expression.
 
 ## Mouse
@@ -169,8 +197,8 @@ want to override them per-colorscheme, the group names are:
 - `FbnT_<top>_B_<bot>` - both halves
 - `<...>_D` - same, with bright (unstaged) delete underline overlay
 - `<...>_DD` - same, with dim (staged) delete underline overlay
-- `FbnCursorBlock`, `FbnBase`, `FbnDel`, `FbnDelDim`, `FbnFile`, `FbnDim`,
-  `FbnInfoTxt`, `FbnErrorTxt`, `FbnWarnTxt` - misc
+- `FbnCursorBlock`, `FbnBase`, `FbnDivider`, `FbnDel`, `FbnDelDim`, `FbnFile`,
+  `FbnDim`, `FbnInfoTxt`, `FbnErrorTxt`, `FbnWarnTxt` - misc
 
 ## License
 
