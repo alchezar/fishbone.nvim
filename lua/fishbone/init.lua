@@ -595,20 +595,51 @@ function M.setup(opts)
   end, { expr = true })
 
   local group = vim.api.nvim_create_augroup('Fishbone', { clear = true })
+
+  -- Deferred, never straight from the autocmd: `:redrawstatus` runs a full
+  -- update_screen, and inside the key-handling path a slow one freezes input.
+  -- Also coalesces events that fire together on one keystroke.
+  local pending = false
+  local function redraw_soon()
+    if pending then return end
+    pending = true
+    vim.schedule(function()
+      pending = false
+      vim.cmd('redrawstatus')
+    end)
+  end
+
+  -- Per-keystroke events, trailed so a burst costs one redraw.
+  local HOT_MS = 40
+  local hot_timer = vim.uv.new_timer()
+  local function redraw_hot()
+    hot_timer:start(HOT_MS, 0, function()
+      hot_timer:stop()
+      vim.schedule(function() vim.cmd('redrawstatus') end)
+    end)
+  end
+  vim.api.nvim_create_autocmd('VimLeavePre', {
+    group = group,
+    callback = function() hot_timer:close() end,
+  })
+
   vim.api.nvim_create_autocmd(
-    { 'CursorMoved', 'CursorMovedI', 'WinScrolled', 'BufEnter',
-      'DiagnosticChanged', 'VimResized', 'TextChanged', 'TextChangedI',
-      'ModeChanged' },
-    { group = group, callback = function() vim.cmd('redrawstatus') end }
+    { 'CursorMoved', 'CursorMovedI', 'WinScrolled', 'TextChanged', 'TextChangedI' },
+    { group = group, callback = redraw_hot }
+  )
+  -- Rare, and a trailing delay would visibly lag the mode indicator.
+  vim.api.nvim_create_autocmd(
+    { 'BufEnter', 'DiagnosticChanged', 'VimResized', 'ModeChanged' },
+    { group = group, callback = redraw_soon }
   )
   vim.api.nvim_create_autocmd('User', {
     group = group,
     pattern = 'GitSignsUpdate',
-    callback = function() vim.cmd('redrawstatus') end,
+    callback = redraw_soon,
   })
   -- Search pattern changes redraw via CmdlineLeave on /, ?, and :nohlsearch.
   vim.api.nvim_create_autocmd('CmdlineLeave', {
-    group = group, callback = function() vim.cmd('redrawstatus') end,
+    group = group, callback = redraw_soon,
   })
   vim.api.nvim_create_autocmd('ColorScheme',
     { group = group, callback = setup_hl })
