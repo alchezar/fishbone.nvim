@@ -146,6 +146,10 @@ local last     = { left_w = 0, bar_width = 0, total_lines = 1 }
 -- (clamped to the bar) regardless of mouse Y.
 local dragging = false
 
+-- Neovide only. Set by every left press the keymap sees, cleared on release,
+-- so a release with no press before it marks a press Neovide swallowed.
+local pressed = false
+
 local function top_colors()
   local sel, vp = color('selection'), color('viewport')
   return {
@@ -527,6 +531,15 @@ local function jump_from_mouse(mp, add_jump, clamp)
   return true
 end
 
+-- Whether a mouse position falls on the bar cells (Neovide keymap path).
+local function on_bar(mp)
+  if last.bar_width <= 0 or mp.screenrow ~= vim.o.lines - vim.o.cmdheight then
+    return false
+  end
+  local col_in_bar = mp.screencol - last.left_w
+  return col_in_bar >= 1 and col_in_bar <= last.bar_width
+end
+
 -- Called via the `%@FishboneClick@` region in the rendered statusline.
 function M.on_click(_, _, button, _)
   if button ~= 'l' then return end
@@ -560,15 +573,12 @@ function M.setup(opts)
   -- statusline row ourselves (detected by screenrow).
   if vim.g.neovide then
     vim.keymap.set({ 'n', 'i', 'v' }, '<LeftMouse>', function()
+      pressed = true
       local mp = vim.fn.getmousepos()
-      if mp.screenrow == vim.o.lines - vim.o.cmdheight
-          and last.bar_width > 0 then
-        local col_in_bar = mp.screencol - last.left_w
-        if col_in_bar >= 1 and col_in_bar <= last.bar_width then
-          dragging = true
-          vim.schedule(function() jump_from_mouse(mp, true, false) end)
-          return ''
-        end
+      if on_bar(mp) then
+        dragging = true
+        vim.schedule(function() jump_from_mouse(mp, true, false) end)
+        return ''
       end
       dragging = false
       return '<LeftMouse>'
@@ -587,9 +597,20 @@ function M.setup(opts)
   end, { expr = true })
 
   vim.keymap.set({ 'n', 'i', 'v' }, '<LeftRelease>', function()
+    local was_pressed = pressed
+    pressed = false
     if dragging then
       dragging = false
       return ''
+    end
+    -- Neovide's `frame = "transparent"` titlebar view sits at the window bottom
+    -- and eats presses over the lower half of the bar, so the release is the click.
+    if vim.g.neovide and not was_pressed then
+      local mp = vim.fn.getmousepos()
+      if on_bar(mp) then
+        vim.schedule(function() jump_from_mouse(mp, true, false) end)
+        return ''
+      end
     end
     return '<LeftRelease>'
   end, { expr = true })

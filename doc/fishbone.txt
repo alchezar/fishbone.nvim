@@ -150,6 +150,11 @@ Works in terminal Neovim and Neovide. In Neovide, the plugin installs a
 `<LeftMouse>` keymap because Neovide does not route clicks to statusline
 `%@...@` regions.
 
+On macOS with Neovide's `frame = "transparent"`, an invisible titlebar view
+sits at the bottom of the window and swallows presses over the lower part of
+the bar. Only the release reaches Neovim, so the plugin jumps on that release
+instead. A drag can only start from the upper part of the cells there.
+
 ==============================================================================
 6. HIGHLIGHTS                                           *fishbone-highlights*
 
